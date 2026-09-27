@@ -714,25 +714,37 @@ class OsuManager:
         返回 (已删除难度数, 失败列表)。删除后同步清理内存与收藏夹。
         progress_cb(done, total)：每处理一个难度回调一次，用于界面进度提示。
         """
-        targets = [(b.folder_name, b.file_name) for b in beatmaps if b.folder_name and b.file_name]
-        affected = sorted({f for f, _ in targets})
+        hashes_by_path: dict[tuple[str, str], set[str]] = {}
+        for beatmap in beatmaps:
+            if not beatmap.folder_name or not beatmap.file_name:
+                continue
+            path_key = (beatmap.folder_name, beatmap.file_name)
+            hashes_by_path.setdefault(path_key, set())
+            if beatmap.md5:
+                hashes_by_path[path_key].add(beatmap.md5)
+        targets = list(hashes_by_path)
+        affected = sorted({folder for folder, _ in targets})
         total = len(targets)
 
         ok, failed = 0, []
+        removed_paths: set[tuple[str, str]] = set()
         for i, (folder, file) in enumerate(targets):
             path = os.path.join(self.songs_dir, folder, file)
             if not os.path.exists(path):
                 ok += 1  # 文件已不存在，视为已删除
+                removed_paths.add((folder, file))
             else:
                 try:
                     if use_trash:
                         if send_to_recycle_bin(path):
                             ok += 1
+                            removed_paths.add((folder, file))
                         else:
                             failed.append(f"{folder}/{file}")
                     else:
                         os.remove(path)
                         ok += 1
+                        removed_paths.add((folder, file))
                 except OSError:
                     failed.append(f"{folder}/{file}")
             if progress_cb:
@@ -757,11 +769,13 @@ class OsuManager:
                     pass
 
         # 清理内存与收藏夹
-        hashes = {b.md5 for b in beatmaps if b.md5}
-        self.beatmaps = [b for b in self.beatmaps if b.md5 not in hashes]
-        for c in self.collections:
-            c.beatmap_hashes = [h for h in c.beatmap_hashes if h not in hashes]
-        self.save_collections()
+        hashes = {h for path_key in removed_paths for h in hashes_by_path[path_key]}
+        self.beatmaps = [b for b in self.beatmaps
+                         if (b.folder_name, b.file_name) not in removed_paths]
+        if hashes:
+            for c in self.collections:
+                c.beatmap_hashes = [h for h in c.beatmap_hashes if h not in hashes]
+            self.save_collections()
         return ok, failed
 
     # ---- 导出 ----

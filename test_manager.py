@@ -7,7 +7,12 @@ import zipfile
 
 import osudb
 import manager
-from manager import FilterCriteria, OsuManager
+from common import (
+    _apply_advanced_filter, _categories, _filter_beatmaps_by_difficulty,
+    _filter_beatmaps_by_filters, _filter_songs_by_difficulty,
+    _filter_songs_by_filters, _filter_songs_impl,
+)
+from manager import Beatmap, FilterCriteria, OsuManager, Song, group_into_songs
 
 
 def _s(s):
@@ -85,6 +90,78 @@ def _build_osu_db():
     return bytes(out)
 
 
+def test_filtered_difficulty_delete():
+    with tempfile.TemporaryDirectory() as temp:
+        songs_dir = os.path.join(temp, "Songs", "Mixed Set")
+        os.makedirs(songs_dir)
+        beatmaps = [
+            Beatmap(folder_name="Mixed Set", file_name="osu-easy.osu", md5="osu-low",
+                    mode=0, star_rating=2.5),
+            Beatmap(folder_name="Mixed Set", file_name="osu-hard.osu", md5="osu-high",
+                    mode=0, star_rating=5.2),
+            Beatmap(folder_name="Mixed Set", file_name="mania-easy.osu", md5="mania-low",
+                    mode=3, star_rating=2.0),
+        ]
+        for beatmap in beatmaps:
+            with open(os.path.join(songs_dir, beatmap.file_name), "w", encoding="utf-8") as f:
+                f.write("osu file format v14\n")
+
+        song = group_into_songs(beatmaps)[0]
+        visible_songs = _apply_advanced_filter([song], star_min=0, star_max=3)
+        visible_songs = _filter_songs_by_difficulty(visible_songs, "osu", 0, 3)
+        targets = _filter_beatmaps_by_difficulty(visible_songs[0].beatmaps, "osu", 0, 3)
+        assert [b.file_name for b in targets] == ["osu-easy.osu"]
+
+        mgr = OsuManager(temp)
+        mgr.beatmaps = list(beatmaps)
+        mgr.collections = [osudb.Collection("待测收藏夹", [b.md5 for b in beatmaps])]
+        deleted, failed = mgr.delete_beatmaps(targets, use_trash=False)
+
+        assert deleted == 1 and not failed, (deleted, failed)
+        assert not os.path.exists(os.path.join(songs_dir, "osu-easy.osu"))
+        assert os.path.isfile(os.path.join(songs_dir, "osu-hard.osu"))
+        assert os.path.isfile(os.path.join(songs_dir, "mania-easy.osu"))
+        assert {b.md5 for b in mgr.beatmaps} == {"osu-high", "mania-low"}
+        assert mgr.collections[0].beatmap_hashes == ["osu-high", "mania-low"]
+        print("模式 + 星级筛选仅删除命中难度，其余模式/星级保留 ✔")
+
+
+def test_filter_combinations_and_categories():
+    easy = Beatmap(title="Night Code", artist="Alpha feat. Beta", difficulty_name="Easy",
+                   mode=0, star_rating=2.5, ar=7, od=6, cs=4, hp=5, bpm=180,
+                   total_time_ms=80000)
+    hard = Beatmap(title="Night Code", artist="Alpha feat. Beta", difficulty_name="Insane",
+                   mode=0, star_rating=5.2, ar=9, od=8, cs=4, hp=6, bpm=200,
+                   total_time_ms=200000)
+    mania = Beatmap(title="Night Code", artist="Alpha feat. Beta", difficulty_name="4K",
+                    mode=3, star_rating=2.0, ar=7, od=6, cs=4, hp=5, bpm=180,
+                    total_time_ms=80000)
+    song = Song(title="Night Code", artist="Alpha feat. Beta", beatmaps=[easy, hard, mania])
+
+    filters = {
+        "game_mode": "osu", "star_min": 2, "star_max": 3,
+        "ar_min": 6, "ar_max": 8, "od_min": 5, "od_max": 7,
+        "cs_min": 3, "cs_max": 5, "hp_min": 4, "hp_max": 6,
+        "bpm_min": 170, "bpm_max": 190, "difficulty": "eaS",
+    }
+    assert _filter_songs_by_filters([song], filters) == [song]
+    assert _filter_beatmaps_by_filters(song.beatmaps, filters) == [easy]
+    filters["len_min"], filters["len_max"] = 70, 100
+    assert _filter_beatmaps_by_filters(song.beatmaps, filters) == [easy]
+    filters.pop("len_min")
+    filters.pop("len_max")
+    filters["ar_min"] = 8.5
+    assert _filter_songs_by_filters([song], filters) == []
+
+    songs = [song]
+    assert _categories(songs, "按艺术家") == ["Beta"]
+    assert _filter_songs_impl(songs, "按艺术家", "Beta", "insane") == [song]
+    assert _categories(songs, "按首字母") == ["N"]
+    assert _filter_songs_impl(songs, "按首字母", "N", "4k") == [song]
+    assert _filter_songs_impl(songs, "按艺术家", "Beta", "missing") == []
+    print("搜索、艺术家/首字母分类及复合难度筛选通过 ✔")
+
+
 def main():
     tmp = tempfile.mkdtemp()
     try:
@@ -152,6 +229,8 @@ def main():
         mgr.load()
         assert len(mgr.collections[0].beatmap_hashes) == 2, mgr.collections[0].beatmap_hashes
 
+        test_filtered_difficulty_delete()
+        test_filter_combinations_and_categories()
         print("manager 自测通过 ✔")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)

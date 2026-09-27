@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtGui import QColor, QFontMetrics, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox, QFrame, QLabel, QLayout, QSizePolicy, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget,
 )
@@ -12,6 +12,41 @@ from .theme import hex_rgb
 
 def qcolor(color: str) -> QColor:
     return QColor(*hex_rgb(color))
+
+
+class ElidedLabel(QLabel):
+    """Single-line label that truncates at the widget edge and keeps the full text in its tooltip."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(parent)
+        self._full_text = text or ""
+        self.setWordWrap(False)
+        self.setMinimumWidth(0)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.setToolTip(self._full_text)
+        self._update_elided_text()
+
+    def setFullText(self, text: str):
+        self._full_text = text or ""
+        self.setToolTip(self._full_text)
+        self._update_elided_text()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_elided_text()
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.FontChange, QEvent.Type.StyleChange):
+            self._update_elided_text()
+
+    def _update_elided_text(self):
+        width = max(0, self.contentsRect().width())
+        text = QFontMetrics(self.font()).elidedText(
+            self._full_text, Qt.TextElideMode.ElideRight, width
+        )
+        if QLabel.text(self) != text:
+            QLabel.setText(self, text)
 
 
 class FlowLayout(QLayout):
